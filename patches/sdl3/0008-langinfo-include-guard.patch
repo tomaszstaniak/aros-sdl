@@ -1,0 +1,24 @@
+Title: Include langinfo.h only when nl_langinfo is used
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-16
+Author: aros-sdl project
+Problem: src/time/unix/SDL_systime.c includes <langinfo.h> unconditionally although nl_langinfo() is only called under HAVE_NL_LANGINFO; on a C library without the header (ABIv11 SDK-202609) the file does not compile.
+Change: The include is guarded by HAVE_NL_LANGINFO like its use.
+Scope: all platforms (src/time/unix)
+Upstream: candidate (libsdl-org/SDL)
+Verification: ABIv11 kit builds (SDK-202609 has no langinfo.h); mainline kit unchanged in behaviour (HAVE_NL_LANGINFO undefined on AROS).
+Removal: when SDL guards the include
+---
+diff -ru a/src/time/unix/SDL_systime.c b/src/time/unix/SDL_systime.c
+--- a/src/time/unix/SDL_systime.c	2026-11-16 17:47:47
++++ b/src/time/unix/SDL_systime.c	2026-11-16 17:47:47
+@@ -24,7 +24,9 @@
+ 
+ #include "../SDL_time_c.h"
+ #include <errno.h>
++#ifdef HAVE_NL_LANGINFO
+ #include <langinfo.h>
++#endif
+ #include <sys/time.h>
+ #include <time.h>
+ #include <unistd.h>

@@ -1,0 +1,78 @@
+Title: Iconify on AROS, and reply to Workbench messages
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-16
+Author: aros-sdl project
+Problem: AROS_CheckWBEvents never replied to AppMessages; Workbench waits for the reply while holding its lock, so dropping files on a window froze the system (the same bug was fixed in the SDL2 port in deadwood2/contrib abdd0267). The iconify gadget "hid" windows through window opacity, which does nothing on AROS, and created an AppIcon only when the program had its own icon or ENVARC:Sys/def_SDL existed: the window stayed and no icon appeared.
+Change: Reply to every AppMessage after handling it. On AROS, iconify hides the windows with HideWindow and sends SDL_EVENT_WINDOW_MINIMIZED, only when the AppIcon was added; the AppIcon brings them back with ShowWindow and SDL_EVENT_WINDOW_RESTORED. Programs without an icon iconify to the default tool icon.
+Scope: AROS (src/video/aros)
+Upstream: https://github.com/aros-development-team/contrib/pull/92 (open, submitted 2026-11-16)
+Verification: Built for mainline x86_64 (GCC 10.5, SDK 20261110); pool v1-1 (nightly 20261113), 2026-11-16: the iconify gadget hides the self-test window, a default tool AppIcon appears, a double-click on it brings the window back (SDL_EVENT_WINDOW_MINIMIZED 521 and RESTORED 523 logged); a PNG icon dropped from a Wanderer drawer onto a LibreSprite window opens the file, Workbench keeps running
+Contrib branch: tomaszstaniak/contrib sdl3-iconify-appmessage-reply 5002e9e6, on contrib master 142b3ff4; built in-tree and checked before/after 2026-11-16 (tests/aros/sdl3-contrib-check.c); PR not opened yet
+Removal: when contrib has an equivalent change
+---
+diff -ru a/src/video/aros/SDL_arosevents.c b/src/video/aros/SDL_arosevents.c
+--- a/src/video/aros/SDL_arosevents.c	2026-11-16 13:55:05
++++ b/src/video/aros/SDL_arosevents.c	2026-11-16 13:55:05
+@@ -835,6 +835,9 @@
+ 				break;
+ 		}
+ 
++		/* Workbench waits for the reply while it holds its lock: without it a
++		   drop on the window (or a double-click on the AppIcon) froze it. */
++		ReplyMsg(&msg->am_Message);
+ 	}
+ }
+ 
+diff -ru a/src/video/aros/SDL_arosvideo.c b/src/video/aros/SDL_arosvideo.c
+--- a/src/video/aros/SDL_arosvideo.c	2026-11-16 13:55:05
++++ b/src/video/aros/SDL_arosvideo.c	2026-11-16 13:55:05
+@@ -28,6 +28,7 @@
+ 
+ #include "../SDL_sysvideo.h"
+ #include "../SDL_pixels_c.h"
++#include "../../events/SDL_events_c.h"
+ 
+ #include "SDL_arosclipboard.h"
+ 
+@@ -145,6 +146,18 @@
+ 
+ 	if (with_app_icon && data->AppIcon)
+ 		data->AppIconRef = AddAppIconA(0, 0, FilePart(data->FullAppName), &data->WBPort, 0, data->AppIcon, NULL);
++
++#if defined(__AROS__)
++	/* Window opacity does nothing on AROS: hide the windows instead, but only
++	   when the AppIcon is there to bring them back. */
++	if (with_app_icon && data->AppIconRef) {
++		ForeachNode(&data->windowlist, wd)
++		{
++			if (wd->win && HideWindow(wd->win))
++				SDL_SendWindowEvent(wd->window, SDL_EVENT_WINDOW_MINIMIZED, 0, 0);
++		}
++	}
++#endif
+ }
+ 
+ void
+@@ -169,6 +182,10 @@
+     {
+         struct Window *win = wd->win;
+         if (win) {
++#if defined(__AROS__)
++            if (ShowWindow(win, WINDOW_FRONTMOST))
++                SDL_SendWindowEvent(wd->window, SDL_EVENT_WINDOW_RESTORED, 0, 0);
++#endif
+             AROS_SetWindowOpacity(_this, wd->window, 1.0);
+             AROS_WindowToFront(win);
+         }
+@@ -384,6 +401,11 @@
+ 
+ 			if (data->AppIcon == NULL)
+ 				data->AppIcon = GetDiskObject((STRPTR)"ENVARC:Sys/def_SDL");
++#if defined(__AROS__)
++			/* A program without its own icon still gets one to iconify to. */
++			if (data->AppIcon == NULL)
++				data->AppIcon = GetDefDiskObject(WBTOOL);
++#endif
+ 
+ 			if (data->AppIcon) {
+ 				data->AppIcon->do_CurrentX = NO_ICON_POSITION;

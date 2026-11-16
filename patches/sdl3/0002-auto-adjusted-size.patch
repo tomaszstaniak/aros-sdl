@@ -1,0 +1,51 @@
+Title: Report the inner size a window got after WA_AutoAdjust; restore with the inner size
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-16
+Author: aros-sdl project
+Problem: A window asked for 800x600 on an 800x600 screen is shrunk by Intuition to fit with its borders (inner 780x555 on a v1 Wanderer screen), but SDL kept reporting 800x600: programs drew and mapped the pointer for an area larger than the one shown.
+Change: After OpenWindowTags, send SDL_EVENT_WINDOW_RESIZED with the real inner size when it differs from the requested one. AROS_RestoreWindow passed the inner size to ChangeWindowBox, which takes the outer one, so every restore shrank the window by its borders (seen right after the corrected size: inner 780x554 became 760x508); add the borders there.
+Scope: AROS (src/video/aros)
+Upstream: https://github.com/aros-development-team/contrib/pull/90 (open, submitted 2026-11-16)
+Verification: Built for mainline x86_64 (GCC 10.5, SDK 20261110); pool v1-1 (nightly 20261113), 2026-11-16: self-test reports 780x554 for an 800x600 request on an 800x600 Wanderer screen; LibreSprite shows its whole window (menu bar and status bar)
+Contrib branch: tomaszstaniak/contrib sdl3-autoadjust-inner-size cec95ed8, on contrib master 142b3ff4; built in-tree and checked before/after 2026-11-16 (tests/aros/sdl3-contrib-check.c); PR not opened yet
+Removal: when contrib has an equivalent change
+---
+diff -ru a/src/video/aros/SDL_aroswindow.c b/src/video/aros/SDL_aroswindow.c
+--- a/src/video/aros/SDL_aroswindow.c	2026-11-16 12:10:51
++++ b/src/video/aros/SDL_aroswindow.c	2026-11-16 12:10:51
+@@ -512,6 +512,18 @@
+ 			data->curr_y = data->win->TopEdge;
+ 			data->curr_w = data->win->Width;
+ 			data->curr_h = data->win->Height;
++
++			/* WA_AutoAdjust shrinks a window that does not fit on the screen
++			   (an 800x600 inner area on an 800x600 screen, with its borders
++			   and title bar). Tell SDL the inner size the window really got,
++			   otherwise the program draws and maps the pointer for a larger
++			   area than the one shown. */
++			{
++				int iw = data->win->Width - data->win->BorderLeft - data->win->BorderRight;
++				int ih = data->win->Height - data->win->BorderTop - data->win->BorderBottom;
++				if (iw > 0 && ih > 0 && ((size_t)iw != w || (size_t)ih != h))
++					SDL_SendWindowEvent(window, SDL_EVENT_WINDOW_RESIZED, iw, ih);
++			}
+ 			data->first_deltamove = TRUE;
+             data->menuactive = FALSE;
+             data->win->UserData = (APTR)data;
+@@ -701,7 +713,15 @@
+ 	if (data->win) {
+ 		data->sdlflags &= ~(SDL_WINDOW_MINIMIZED | SDL_WINDOW_MAXIMIZED);
+ 
+-		ChangeWindowBox(data->win, window->x, window->y, window->w, window->h);
++		/* window->w/h are the inner size; ChangeWindowBox takes the outer one. */
++		{
++			LONG ow = window->w, oh = window->h;
++			if ((window->flags & SDL_WINDOW_BORDERLESS) == 0) {
++				ow += data->win->BorderLeft + data->win->BorderRight;
++				oh += data->win->BorderTop + data->win->BorderBottom;
++			}
++			ChangeWindowBox(data->win, window->x, window->y, ow, oh);
++		}
+ 		AROS_WindowToFront(data->win);
+ 	}
+ }

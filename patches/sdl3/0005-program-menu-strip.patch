@@ -1,0 +1,148 @@
+Title: Let programs use their own Intuition menu strip
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-16
+Author: aros-sdl project
+Problem: SDL gives every AROS window its own GadTools menu ("Project", "Options") and offers no way to reach the Intuition window, so a program cannot show its commands in the native menu; menu picks are only handled for SDL's own menu.
+Change: Window properties: SDL.window.aros.window (struct Window *), SDL.window.aros.menupick_event (an SDL event type, registered once). A program sets its strip with SetMenuStrip; picks in it arrive as that event, one per selected item, with the Intuition menu number in user.code, and a menu closed without a choice as one event with MENUNULL. IDCMP_MENUVERIFY calls SDL.window.aros.menuverify_callback(userdata, window) before the menu shows; it may change item flags, not the strip. Closing a window clears a program strip.
+Scope: AROS (src/video/aros)
+Upstream: candidate (aros-development-team/contrib); API names open for review
+Verification: pending
+Removal: when contrib has an equivalent interface
+---
+diff -ru a/src/video/aros/SDL_arosevents.c b/src/video/aros/SDL_arosevents.c
+--- a/src/video/aros/SDL_arosevents.c	2026-11-16 14:49:04
++++ b/src/video/aros/SDL_arosevents.c	2026-11-16 14:49:04
+@@ -511,6 +511,27 @@
+ AROS_HandleMenu(SDL_VideoDevice *_this, struct IntuiMessage *m)
+ {
+     SDL_WindowData *data = (SDL_WindowData *)m->IDCMPWindow->UserData;
++    if (data->win && data->win->MenuStrip && data->win->MenuStrip != data->menu) {
++        /* The program's own strip: pass every selected item on; a menu
++           closed without a choice arrives as one event with MENUNULL. */
++        UWORD code = m->Code;
++        Uint32 type = AROS_MenuPickEventType();
++        bool first = true;
++        while (type != 0 && (code != MENUNULL || first)) {
++            first = false;
++            struct MenuItem *item = ItemAddress(data->win->MenuStrip, code);
++            SDL_Event event;
++            SDL_zero(event);
++            event.type = type;
++            event.user.windowID = SDL_GetWindowID(data->window);
++            event.user.code = code;
++            SDL_PushEvent(&event);
++            if (code == MENUNULL || !item)
++                break;
++            code = item->NextSelect;
++        }
++        return;
++    }
+     if (data->win) {
+         if (data->menu) {
+             struct MenuItem *item = ItemAddress(data->menu, m->Code);
+@@ -690,6 +711,19 @@
+     switch (m->Class) {
+     case IDCMP_MENUPICK:
+         AROS_HandleMenu(_this, m);
++        break;
++
++    case IDCMP_MENUVERIFY:
++        /* Let the program bring its menu up to date before it shows; the
++           message is replied to after this returns. The callback may change
++           item flags but must not replace the strip. */
++        if (m->Code == MENUHOT && data && data->win && data->win->MenuStrip != data->menu) {
++            SDL_PropertiesID props = SDL_GetWindowProperties(data->window);
++            void (*cb)(void *, struct Window *) = (void (*)(void *, struct Window *))
++                SDL_GetPointerProperty(props, SDL_PROP_WINDOW_AROS_MENUVERIFY_CALLBACK_POINTER, NULL);
++            if (cb)
++                cb(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_AROS_MENUVERIFY_USERDATA_POINTER, NULL), data->win);
++        }
+         break;
+ 
+     case IDCMP_REFRESHWINDOW:
+diff -ru a/src/video/aros/SDL_aroswindow.c b/src/video/aros/SDL_aroswindow.c
+--- a/src/video/aros/SDL_aroswindow.c	2026-11-16 14:49:04
++++ b/src/video/aros/SDL_aroswindow.c	2026-11-16 14:49:04
+@@ -56,6 +56,14 @@
+ extern struct Library *WorkbenchBase;
+ extern struct Library *GfxBase;
+ 
++Uint32 AROS_MenuPickEventType(void)
++{
++	static Uint32 type;
++	if (type == 0)
++		type = SDL_RegisterEvents(1);
++	return type;
++}
++
+ struct NewMenu SDL_NewMenu[] =
+ {
+ 	{ NM_TITLE, (char *)"Project", 0, 0, 0, (APTR)MID_PROJECT },
+@@ -133,6 +141,11 @@
+ 		ModifyIDCMP(win, 0);
+ 
+ 		SDL_WindowData *data = (SDL_WindowData *) sdlwin->internal;
++		SDL_SetPointerProperty(SDL_GetWindowProperties(sdlwin), SDL_PROP_WINDOW_AROS_WINDOW_POINTER, NULL);
++		if (win->MenuStrip && win->MenuStrip != data->menu) {
++			/* a strip the program installed */
++			ClearMenuStrip(win);
++		}
+ 		if (data->menuactive == TRUE) {
+             ClearMenuStrip(win);
+             FreeMenus(data->menu);
+@@ -508,12 +521,18 @@
+ 			data->win->UserPort = &vd->WinPort;
+ 			/* Deltas only in relative mode (AROS_SetRelativeMouseMode toggles
+ 			   the flag); otherwise messages carry window positions. */
+-			ModifyIDCMP(data->win, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_MOUSEMOVE | (SDL_GetRelativeMouseMode() ? IDCMP_DELTAMOVE : 0) | IDCMP_MOUSEBUTTONS | IDCMP_REFRESHWINDOW | IDCMP_ACTIVEWINDOW | IDCMP_INACTIVEWINDOW | IDCMP_CHANGEWINDOW | IDCMP_GADGETUP | IDCMP_MENUPICK);
++			ModifyIDCMP(data->win, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_MOUSEMOVE | (SDL_GetRelativeMouseMode() ? IDCMP_DELTAMOVE : 0) | IDCMP_MOUSEBUTTONS | IDCMP_REFRESHWINDOW | IDCMP_ACTIVEWINDOW | IDCMP_INACTIVEWINDOW | IDCMP_CHANGEWINDOW | IDCMP_GADGETUP | IDCMP_MENUPICK | IDCMP_MENUVERIFY);
+ 
+ 			data->curr_x = data->win->LeftEdge;
+ 			data->curr_y = data->win->TopEdge;
+ 			data->curr_w = data->win->Width;
+ 			data->curr_h = data->win->Height;
++
++			{
++				SDL_PropertiesID props = SDL_GetWindowProperties(window);
++				SDL_SetPointerProperty(props, SDL_PROP_WINDOW_AROS_WINDOW_POINTER, data->win);
++				SDL_SetNumberProperty(props, SDL_PROP_WINDOW_AROS_MENUPICK_EVENT_NUMBER, AROS_MenuPickEventType());
++			}
+ 
+ 			/* WA_AutoAdjust shrinks a window that does not fit on the screen
+ 			   (an 800x600 inner area on an 800x600 screen, with its borders
+diff -ru a/src/video/aros/SDL_aroswindow.h b/src/video/aros/SDL_aroswindow.h
+--- a/src/video/aros/SDL_aroswindow.h	2026-11-16 14:49:04
++++ b/src/video/aros/SDL_aroswindow.h	2026-11-16 14:49:04
+@@ -86,6 +86,7 @@
+ 	BYTE winflags;
+ 	
+ 	APTR menuvisualinfo;
++	/* program-installed menu strip support, see SDL_aroswindow.c */
+ 	struct Menu *menu;
+ 	BOOL menuactive;
+ 	
+@@ -129,5 +130,24 @@
+ extern void AROS_OpenWindows(SDL_VideoDevice *_this);
+ extern void AROS_RecreateWindow(SDL_VideoDevice *_this, SDL_Window * window);
+ extern void AROS_WindowToFront(struct Window *win);
++
++/* AROS window properties for programs that use the Intuition window directly:
++ *  SDL_PROP_WINDOW_AROS_WINDOW_POINTER       struct Window * of the SDL window (NULL when closed)
++ *  SDL_PROP_WINDOW_AROS_MENUPICK_EVENT_NUMBER SDL event type sent for picks in a menu strip the
++ *                                            program set with SetMenuStrip (user.code = the
++ *                                            Intuition menu number of one selected item, or
++ *                                            MENUNULL once when the menu closed without a choice)
++ *  SDL_PROP_WINDOW_AROS_MENUVERIFY_CALLBACK_POINTER  void (*)(void *userdata, struct Window *),
++ *                                            set by the program; called on IDCMP_MENUVERIFY
++ *                                            before the menu shows, to update item flags
++ *                                            (it must not replace the strip)
++ *  SDL_PROP_WINDOW_AROS_MENUVERIFY_USERDATA_POINTER  passed to that callback
++ */
++#define SDL_PROP_WINDOW_AROS_WINDOW_POINTER                "SDL.window.aros.window"
++#define SDL_PROP_WINDOW_AROS_MENUPICK_EVENT_NUMBER         "SDL.window.aros.menupick_event"
++#define SDL_PROP_WINDOW_AROS_MENUVERIFY_CALLBACK_POINTER   "SDL.window.aros.menuverify_callback"
++#define SDL_PROP_WINDOW_AROS_MENUVERIFY_USERDATA_POINTER   "SDL.window.aros.menuverify_userdata"
++
++extern Uint32 AROS_MenuPickEventType(void);
+ 
+ #endif /* _SDL_aroswindow_h */

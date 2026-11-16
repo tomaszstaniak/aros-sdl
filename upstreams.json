@@ -1,0 +1,30 @@
+{
+  "repositories": {
+    "contrib": {
+      "url": "https://github.com/aros-development-team/contrib.git",
+      "commit": "142b3ff4764d00ce57c4c9f97daf9d12560036cf",
+      "paths": [
+        "SDL2/",
+        "SDL3/",
+        "development/libs/libiconv/"
+      ]
+    }
+  },
+  "distfiles": {
+    "libiconv": {
+      "file": "libiconv-1.19.tar.gz",
+      "url": "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.19.tar.gz",
+      "sha256": "88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6"
+    },
+    "sdl3": {
+      "file": "SDL3-3.4.12.tar.gz",
+      "url": "https://www.libsdl.org/release/SDL3-3.4.12.tar.gz",
+      "sha256": "f07b958a9ac5020fb7a44cadb957f658b2149c3c8abb4f63145fac9303249db7"
+    },
+    "sdl3_image": {
+      "file": "SDL3_image-3.4.4.tar.gz",
+      "url": "https://www.libsdl.org/projects/SDL_image/release/SDL3_image-3.4.4.tar.gz",
+      "sha256": "29751304a13d25ac513f24305fa25b06a6edd9607718c90129b8350d35fc5573"
+    }
+  }
+}

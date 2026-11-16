@@ -1,0 +1,28 @@
+Title: Build without the OOP headers (no native joystick driver)
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-16
+Author: aros-sdl project
+Problem: The ABIv11 SDK-202609 has no oop/ headers and no proto/oop.h; src/joystick/aros/SDL_sysjoystick.c (controller.hidd) needs them, so SDL3 cannot be built for ABIv11.
+Change: With SDL_AROS_NO_OOP_HEADERS defined (set by build.py for aros-x86_64-abiv11-pc), the build configuration selects the dummy joystick driver instead of SDL_JOYSTICK_AROS; build.py then also compiles src/joystick/dummy/SDL_sysjoystick.c. Other targets are unchanged.
+Scope: AROS ABIv11 builds
+Upstream: local-only (SDK packaging issue)
+Verification: ABIv11 kit built (SDK-202609, GCC 10.5); LibreSprite on AROS One (pool v11-3, 2026-11-16) runs; joystick not used by it.
+Removal: when the ABIv11 SDK ships the OOP headers
+---
+diff -ru a/include/build_config/SDL_build_config_aros.h b/include/build_config/SDL_build_config_aros.h
+--- a/include/build_config/SDL_build_config_aros.h	2026-11-16 17:46:51
++++ b/include/build_config/SDL_build_config_aros.h	2026-11-16 17:46:51
+@@ -655,7 +655,13 @@
+ 
+ /* Joystick: native AROS lowlevel.library backend (src/joystick/aros), plus the
+    hardware-independent virtual joystick driver (used by SDL_AttachVirtualJoystick). */
++#ifndef SDL_AROS_NO_OOP_HEADERS
+ #define SDL_JOYSTICK_AROS 1
++#else
++/* The SDK has no oop/ headers (ABIv11 SDK-202609): the controller.hidd
++   driver cannot be built, use the dummy driver (no joysticks). */
++#define SDL_JOYSTICK_DUMMY 1
++#endif
+ #define SDL_JOYSTICK_VIRTUAL 1
+ 
+ /* Locale, OpenURL and mutex use their native AROS backends, selected via the

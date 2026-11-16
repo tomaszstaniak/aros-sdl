@@ -1,0 +1,122 @@
+Title: Send typed text on AROS
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-16
+Author: aros-sdl project
+Problem: AROS_TranslateUnicode only had the MorphOS path (IMSGA_UCS4) and returned 0 on AROS, so no SDL_EVENT_TEXT_INPUT was ever sent: text fields received no characters.
+Change: Map the key with MapRawKey (with the previous keys, so dead keys combine), keep only printable bytes, convert them from the system character set (ENV:CHARSET, ISO-8859-1 when unset) to UTF-8 with SDL_iconv.
+Scope: AROS (src/video/aros)
+Upstream: https://github.com/aros-development-team/contrib/pull/91 (open, submitted 2026-11-16)
+Verification: Built for mainline x86_64 (GCC 10.5, SDK 20261110); pool v1-1 (nightly 20261113), 2026-11-16: self-test receives SDL_EVENT_TEXT_INPUT for typed letters, Shift and punctuation (US keymap; ISO-8859-2 keymap not yet tried)
+Contrib branch: tomaszstaniak/contrib sdl3-text-input 53940520, on contrib master 142b3ff4; built in-tree and checked before/after 2026-11-16 (tests/aros/sdl3-contrib-check.c); PR not opened yet
+Removal: when contrib has an equivalent change
+---
+diff -ru a/src/video/aros/SDL_arosevents.c b/src/video/aros/SDL_arosevents.c
+--- a/src/video/aros/SDL_arosevents.c	2026-11-16 11:47:39
++++ b/src/video/aros/SDL_arosevents.c	2026-11-16 11:47:39
+@@ -36,7 +36,9 @@
+ #include "SDL_arosopengl.h"
+ #include "SDL_arosmouse.h"
+ 
++#include <devices/inputevent.h>
+ #include <devices/rawkeycodes.h>
++#include <dos/var.h>
+ #include <intuition/extensions.h>
+ #include <rexx/errors.h>
+ #include <rexx/storage.h>
+@@ -126,13 +128,84 @@
+ 
+ }
+ 
++#if defined(__AROS__)
++extern struct Library *KeymapBase;
++
++/* The system character set: keymaps produce bytes in the set the Locale
++   preferences store in ENV:CHARSET (codesets.library names, e.g.
++   "ISO-8859-2"; "ISO-8859-1 + Euro" is the codesets default). */
++static const char *
++AROS_SystemCharset(void)
++{
++	static char charset[64];
++	static int read;
++
++	if (!read) {
++		read = 1;
++		if (GetVar("CHARSET", charset, sizeof(charset), GVF_GLOBAL_ONLY) <= 0) {
++			charset[0] = '\0';
++		} else {
++			char *plus = SDL_strchr(charset, '+');
++			if (plus) {
++				*plus = '\0';
++			}
++			for (size_t n = SDL_strlen(charset); n > 0 && charset[n - 1] == ' '; n--) {
++				charset[n - 1] = '\0';
++			}
++		}
++	}
++	return charset[0] ? charset : "ISO-8859-1";
++}
++#endif
++
++/* Text typed by a key press, as UTF-8 in buffer (size bytes). Returns its
++   length, 0 when the key produces no printable text. */
+ static int
+-AROS_TranslateUnicode(struct IntuiMessage *m, char *buffer)
++AROS_TranslateUnicode(struct IntuiMessage *m, char *buffer, size_t size)
+ {
+ 	int length = 0;
+ #if !defined(__AROS__)
+     WCHAR keycode = getv(m, IMSGA_UCS4);
+ 	length = UTF8_Encode(keycode, buffer);
++#else
++	struct InputEvent ie;
++	char bytes[8];
++	WORD n;
++	char *utf8;
++
++	SDL_zero(ie);
++	ie.ie_Class = IECLASS_RAWKEY;
++	ie.ie_Code = m->Code;
++	ie.ie_Qualifier = m->Qualifier;
++	/* The previous key presses, so that dead keys combine. */
++	ie.ie_EventAddress = m->IAddress ? *((APTR *)m->IAddress) : NULL;
++
++	n = MapRawKey(&ie, bytes, sizeof(bytes) - 1, NULL);
++	if (n <= 0) {
++		return 0;
++	}
++	for (WORD i = 0; i < n; i++) {
++		unsigned char c = (unsigned char)bytes[i];
++		/* Control codes and CSI sequences (cursor and function keys) are not text. */
++		if (c < 0x20 || c == 0x7F || (c >= 0x80 && c < 0xA0)) {
++			return 0;
++		}
++	}
++	bytes[n] = '\0';
++
++	utf8 = SDL_iconv_string("UTF-8", AROS_SystemCharset(), bytes, (size_t)n + 1);
++	if (!utf8) {
++		utf8 = SDL_iconv_string("UTF-8", "ISO-8859-1", bytes, (size_t)n + 1);
++	}
++	if (utf8) {
++		length = (int)SDL_strlen(utf8);
++		if ((size_t)length >= size) {
++			length = 0;
++		} else {
++			SDL_memcpy(buffer, utf8, (size_t)length);
++		}
++		SDL_free(utf8);
++	}
+ #endif
+ 	return length;
+ }
+@@ -175,8 +248,8 @@
+ 			if (rawkey < sizeof(amigaos_scancode_table) / sizeof(amigaos_scancode_table[0])) {
+                 SDL_Scancode s = amigaos_scancode_table[rawkey];
+                 if (m->Code < 128) {
+-                    char text[5] = { 0 };
+-					int length = AROS_TranslateUnicode(m, text);
++                    char text[32] = { 0 };
++					int length = AROS_TranslateUnicode(m, text, sizeof(text));
+ 					SDL_SendKeyboardKey(0, 0, code, s, true);
+ 					if (length > 0) {
+ 						text[length] = '\0';

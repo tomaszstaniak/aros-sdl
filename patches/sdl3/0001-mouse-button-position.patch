@@ -1,0 +1,62 @@
+Title: Pointer positions from the time of the event; deltas only in relative mode
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-16
+Author: aros-sdl project
+Problem: Windows were opened with IDCMP_DELTAMOVE although relative mode was off, so the MouseX/MouseY of messages were deltas; motion events then read the pointer's screen position when the message was handled, and button events used the last motion. Clicks landed at stale positions (two clicks at different places both at 781,552), and when the program handled events late, a stroke drawn with a drag became one dot at its end.
+Change: Open windows with IDCMP_DELTAMOVE only in relative mode (AROS_SetRelativeMouseMode already toggles it). Outside relative mode, motion and button events use the message's MouseX/MouseY less the window borders: the position at the time of the event.
+Scope: AROS (src/video/aros)
+Upstream: https://github.com/aros-development-team/contrib/pull/89 (open, submitted 2026-11-16)
+Verification: Built for mainline x86_64 (GCC 10.5, SDK 20261110); pool v1-1 (nightly 20261113), 2026-11-16: clicks land on LibreSprite menus, dialogs and palette; two diagonal drags draw two full lines at 500% zoom while the program handles events late (before: one dot at the end)
+Contrib branch: tomaszstaniak/contrib sdl3-pointer-event-position ac5eba54, on contrib master 142b3ff4; built in-tree and checked before/after 2026-11-16 (tests/aros/sdl3-contrib-check.c); PR not opened yet
+Removal: when contrib has an equivalent change
+---
+diff -ru a/src/video/aros/SDL_arosevents.c b/src/video/aros/SDL_arosevents.c
+--- a/src/video/aros/SDL_arosevents.c	2026-11-16 12:35:42
++++ b/src/video/aros/SDL_arosevents.c	2026-11-16 12:35:42
+@@ -109,6 +109,17 @@
+         bool state = (m->Code & IECODE_UP_PREFIX) ? false : true;
+         int button = AROS_GetButton(m->Code & ~(IECODE_UP_PREFIX));
+ 
++        /* SDL reports a button at the last pointer position it was told
++           about. Outside relative mode the message carries the position at
++           the time of the click (window coordinates, IDCMP_DELTAMOVE off):
++           report it first, so a click is not placed at a stale position or,
++           when events are handled late, at where the pointer is now. */
++        if (!SDL_GetRelativeMouseMode()) {
++            struct Window *w = m->IDCMPWindow;
++            SDL_SendMouseMotion(0, data->window, 0, false,
++                                m->MouseX - w->BorderLeft, m->MouseY - w->BorderTop);
++        }
++
+         globalMouseState.buttonPressed[button] = state;
+ 
+         SDL_SendMouseButton(0, data->window, 0, button, state);
+@@ -196,9 +207,11 @@
+         }
+         SDL_SendMouseMotion(0, data->window, 0, true, m->MouseX, m->MouseY);
+     } else {
+-    	//struct Screen *s = data->win->WScreen;
+-        int x = (s->MouseX - data->win->LeftEdge - data->win->BorderLeft);
+-        int y = (s->MouseY - data->win->TopEdge - data->win->BorderTop);
++        /* The position at the time of the move, not where the pointer is
++           when the message is handled: strokes keep their shape when the
++           program is busy. */
++        int x = m->MouseX - data->win->BorderLeft;
++        int y = m->MouseY - data->win->BorderTop;
+         SDL_SendMouseMotion(0, data->window, 0, false, x, y);
+     }
+ }
+diff -ru a/src/video/aros/SDL_aroswindow.c b/src/video/aros/SDL_aroswindow.c
+--- a/src/video/aros/SDL_aroswindow.c	2026-11-16 12:35:42
++++ b/src/video/aros/SDL_aroswindow.c	2026-11-16 12:35:42
+@@ -506,7 +506,9 @@
+ 			}
+ 
+ 			data->win->UserPort = &vd->WinPort;
+-			ModifyIDCMP(data->win, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_MOUSEMOVE | IDCMP_DELTAMOVE | IDCMP_MOUSEBUTTONS | IDCMP_REFRESHWINDOW | IDCMP_ACTIVEWINDOW | IDCMP_INACTIVEWINDOW | IDCMP_CHANGEWINDOW | IDCMP_GADGETUP | IDCMP_MENUPICK);
++			/* Deltas only in relative mode (AROS_SetRelativeMouseMode toggles
++			   the flag); otherwise messages carry window positions. */
++			ModifyIDCMP(data->win, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_MOUSEMOVE | (SDL_GetRelativeMouseMode() ? IDCMP_DELTAMOVE : 0) | IDCMP_MOUSEBUTTONS | IDCMP_REFRESHWINDOW | IDCMP_ACTIVEWINDOW | IDCMP_INACTIVEWINDOW | IDCMP_CHANGEWINDOW | IDCMP_GADGETUP | IDCMP_MENUPICK);
+ 
+ 			data->curr_x = data->win->LeftEdge;
+ 			data->curr_y = data->win->TopEdge;

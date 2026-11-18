@@ -1,0 +1,38 @@
+Title: Open windows as smart refresh; report moves when the top edge changes
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-18
+Author: aros-sdl project
+Problem: Windows open with WFLG_SIMPLE_REFRESH. Every step of a window drag near a screen edge, and every window passing over it, makes Intuition send IDCMP_REFRESHWINDOW, which SDL turns into SDL_EVENT_WINDOW_EXPOSED; programs answer with a full redraw or present. Measured with Pragtical (1552x910, AROS One, VMware SVGA 1920x1080, Opaque): 1340/1301 counts per tick of processor time left at the edge as simple refresh, 1871/1923 as smart refresh. The move check also compared curr_h with TopEdge, so a purely vertical move was not reported as SDL_EVENT_WINDOW_MOVED.
+Change: WFLG_SMART_REFRESH instead of WFLG_SIMPLE_REFRESH; compare curr_y with TopEdge. IDCMP_REFRESHWINDOW stays handled (BeginRefresh/EndRefresh and EXPOSED) for the area a window gains when it grows.
+Scope: AROS video backend
+Upstream: candidate (aros-development-team/contrib SDL3)
+Verification: see the aros-libresprite measurements of 2026-11-18 (kit used by LibreSprite); Pragtical carries the same change as sdl3-3.4.12-aros-smart-refresh.diff.
+Removal: when contrib opens smart refresh windows
+---
+diff -ru a/src/video/aros/SDL_arosevents.c b/src/video/aros/SDL_arosevents.c
+--- a/src/video/aros/SDL_arosevents.c	2026-11-18 14:07:45
++++ b/src/video/aros/SDL_arosevents.c	2026-11-18 14:07:45
+@@ -324,7 +324,7 @@
+ 
+ 	D(bug("[SDL3:arosevt] %s()\n", __func__));
+ 
+-	if (data->curr_x != w->LeftEdge || data->curr_h != w->TopEdge) {
++	if (data->curr_x != w->LeftEdge || data->curr_y != w->TopEdge) {
+ 		data->curr_x = w->LeftEdge;
+ 		data->curr_y = w->TopEdge;
+ 		SDL_SendWindowEvent(data->window, SDL_EVENT_WINDOW_MOVED, data->curr_x, data->curr_y);
+diff -ru a/src/video/aros/SDL_aroswindow.c b/src/video/aros/SDL_aroswindow.c
+--- a/src/video/aros/SDL_aroswindow.c	2026-11-18 14:07:45
++++ b/src/video/aros/SDL_aroswindow.c	2026-11-18 14:07:45
+@@ -380,7 +380,10 @@
+ 
+ 	if (data->win == NULL && (data->sdlflags & SDL_WINDOW_MINIMIZED) == 0) {
+ 		struct Screen *scr;
+-		size_t flags = WFLG_SIMPLE_REFRESH | WFLG_REPORTMOUSE | WFLG_ACTIVATE;
++		/* A smart refresh window keeps its own contents while it is moved or
++		 * covered, so dragging it (or a window over it) does not ask the
++		 * program for a full redraw at every step. */
++		size_t flags = WFLG_SMART_REFRESH | WFLG_REPORTMOUSE | WFLG_ACTIVATE;
+ 		size_t w = window->w, h = window->h;
+ 		size_t min_w = window->min_w, min_h = window->min_h;
+ 		size_t left = window->x, top = window->y;

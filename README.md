@@ -39,6 +39,8 @@ Sources are downloaded by the build script and checked against the SHA-256 value
   UTF-8 and the system character set.
 - 0007: the ABIv11 SDK has no OOP headers, so ABIv11 kits use SDL's dummy joystick driver.
 - 0008: `langinfo.h` is included only where it is used.
+- 0009: windows open as smart refresh, so moving or covering a window does not make the
+  program redraw it; vertical-only window moves are reported.
 
 `build.py` also adds the GL link library where static SDL3 needs it (ABIv11) and lets
 SDL3_image link after SDL3.

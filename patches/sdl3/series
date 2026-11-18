@@ -6,3 +6,4 @@
 0006-system-charset-text.patch
 0007-joystick-without-oop-headers.patch
 0008-langinfo-include-guard.patch
+0009-smart-refresh-window.patch

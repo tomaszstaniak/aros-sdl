@@ -1,0 +1,122 @@
+Title: Window surface in plain memory instead of a friend bitmap's memory
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-19
+Author: aros-sdl project
+Problem: AROS_CreateWindowFramebuffer allocates a friend bitmap of the window, locks it, takes its base address and bytes per row, unlocks it and gives that address to SDL as the window surface. The address is only valid while the bitmap is locked, and a display driver may keep bitmaps in video memory in a layout that is not row by row. On an ABIv11 distribution with a GeForce GTX 980 a program drawing through SDL_GetWindowSurface showed slanted stripes instead of its picture. The update also limited a rectangle's size to the window's inner size without its offset.
+Change: The surface is always the memory buffer the function already had as its fallback, shown with WritePixelArray(RECTFMT_BGRA32). Its size is stored with it, so an update between a window resize and the next surface creation uses the right row length. Update rectangles are clipped to the surface and to the window's inner area.
+Scope: AROS video backend
+Upstream: candidate (aros-development-team/contrib SDL3)
+Verification: kits build for x86_64 ABIv11, mainline x86_64 and Raspberry Pi without warnings. LibreSprite with GUI_RENDERER=CPU draws correctly on all three in QEMU (2026-11-19); a user confirmed it on the GeForce GTX 980.
+Removal: when contrib stops handing out bitmap memory outside a lock
+---
+diff -ru a/src/video/aros/SDL_arosframebuffer.c b/src/video/aros/SDL_arosframebuffer.c
+--- a/src/video/aros/SDL_arosframebuffer.c	2026-11-19 18:47:06
++++ b/src/video/aros/SDL_arosframebuffer.c	2026-11-19 18:47:06
+@@ -63,10 +63,6 @@
+ {
+ 	D(bug("[SDL3:arosfb] %s()\n", __func__));
+ 
+-	APTR lock;
+-    APTR base_address;
+-    Uint32 bytes_per_row;
+-
+ 	SDL_WindowData *data = (SDL_WindowData *) window->internal;
+     if (data->bitmap) {
+ 		D(bug("[SDL3:arosfb] %s: freeing existing bitmap @ 0x%p\n", __func__, data->bitmap));
+@@ -87,39 +83,21 @@
+ #else
+     *format = SDL_PIXELFORMAT_ARGB8888;
+ #endif
+-	struct BitMap * friend_bitmap = data->win->RPort->BitMap;
+-	Uint32 depth =  GetBitMapAttr(friend_bitmap, BMA_DEPTH);
+-	data->bitmap = AllocBitMap(window->w, window->h, depth, BMF_MINPLANES|BMF_CLEAR, friend_bitmap);
+-	if (!data->bitmap) {
+-		D(bug("[SDL3:arosfb] %s: ERROR: failed to allocate a bitmap\n", __func__));
+-		return SDL_SetError("Failed to allocate bitmap for framebuffer");
+-	} 
+-		
+-	D("[SDL3:arosfb] %s: Allocate bitmap %d x %d x %d for framebuffer\n", __func__, window->w, window->h, depth);
+-	lock = LockBitMapTags(
+-        data->bitmap,
+-        LBMI_BASEADDRESS, &base_address,
+-        LBMI_BYTESPERROW, &bytes_per_row,
+-        TAG_DONE);
++	/* The surface is plain memory, shown with WritePixelArray(). A friend
++	 * bitmap's own memory cannot be handed to SDL: its address is only
++	 * valid while the bitmap is locked, and a display driver may keep
++	 * bitmaps in video memory in a layout that is not row by row. */
++	data->bitmap = NULL;
++	data->memfb_w = window->w > 0 ? window->w : 1;
++	data->memfb_h = window->h > 0 ? window->h : 1;
++	data->memfb = AllocVec((IPTR)data->memfb_w * data->memfb_h * 4, MEMF_CLEAR);
++	if (data->memfb == NULL) {
++		data->memfb_w = data->memfb_h = 0;
++		return SDL_SetError("Failed to allocate the framebuffer");
++	}
++	*pixels = data->memfb;
++	*pitch = data->memfb_w * 4;
+ 
+-    if (lock) {
+-        *pixels = base_address;
+-        *pitch = bytes_per_row;
+-
+-        UnLockBitMap(lock);
+-    } else {
+-		D(bug("[SDL3:arosfb] %s: ERROR: failed to lock the bitmap\n", __func__));
+-
+-        FreeBitMap(data->bitmap);
+-        data->bitmap = NULL;
+-        data->memfb = AllocVec(window->w * window->h * 4, MEMF_CLEAR);
+-        *pixels = data->memfb;
+-        *pitch = window->w * 4;
+-        if (*pixels == NULL)
+-            return SDL_SetError("Failed to lock framebuffer bitmap");
+-        return true;
+-    }
+-
+ 	D(bug("[SDL3:arosfb] %s: done\n", __func__));
+ 
+ 	return true;
+@@ -144,12 +122,25 @@
+ 				const SDL_Rect * r = &rects[i];
+ 				int dx = r->x + windowBox.Left;
+ 				int dy = r->y + windowBox.Top;
+-				int w =  MIN(r->w, windowBox.Width);
+-				int h = MIN(r->h, windowBox.Height);
+-				if (data->bitmap)
+-					BltBitMapRastPort(data->bitmap,  r->x, r->y, data->win->RPort, dx, dy, w, h, 0xc0);
+-				else if (data->memfb)
+-					WritePixelArray(data->memfb, r->x, r->y, window->w * 4, data->win->RPort, dx, dy, w, h, RECTFMT_BGRA32);
++				int w = r->w;
++				int h = r->h;
++
++				if (data->bitmap) {
++					w = MIN(w, windowBox.Width - r->x);
++					h = MIN(h, windowBox.Height - r->y);
++					if (w > 0 && h > 0)
++						BltBitMapRastPort(data->bitmap,  r->x, r->y, data->win->RPort, dx, dy, w, h, 0xc0);
++				} else if (data->memfb) {
++					/* stay inside the surface and inside the window */
++					if (r->x < 0 || r->y < 0)
++						continue;
++					w = MIN(w, data->memfb_w - r->x);
++					h = MIN(h, data->memfb_h - r->y);
++					w = MIN(w, windowBox.Width - r->x);
++					h = MIN(h, windowBox.Height - r->y);
++					if (w > 0 && h > 0)
++						WritePixelArray(data->memfb, r->x, r->y, data->memfb_w * 4, data->win->RPort, dx, dy, w, h, RECTFMT_BGRA32);
++				}
+ 			}
+ 		}
+ 	return true;
+diff -ru a/src/video/aros/SDL_aroswindow.h b/src/video/aros/SDL_aroswindow.h
+--- a/src/video/aros/SDL_aroswindow.h	2026-11-19 18:47:06
++++ b/src/video/aros/SDL_aroswindow.h	2026-11-19 18:47:06
+@@ -92,6 +92,7 @@
+ 	
+ 	struct BitMap *bitmap;
+ 	APTR memfb;
++	int memfb_w, memfb_h;	/* size memfb was allocated for */
+ };
+ 
+ /* Is this window shown (not iconified) */

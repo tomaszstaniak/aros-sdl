@@ -7,3 +7,4 @@
 0007-joystick-without-oop-headers.patch
 0008-langinfo-include-guard.patch
 0009-smart-refresh-window.patch
+0010-window-surface-in-memory.patch

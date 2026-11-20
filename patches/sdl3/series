@@ -10,3 +10,5 @@
 0010-window-surface-in-memory.patch
 0011-opengl-es-contexts.patch
 0012-clipboard-write-iffparse.patch
+0013-window-size-and-position-requests.patch
+0014-frame-after-gl-window-shrinks.patch

@@ -5,7 +5,7 @@ Author: aros-sdl project
 Problem: AROS_SetClipboardText wrote the IFF headers (FORM, sizes, chunk IDs) as C structures in the processor's byte order. On little-endian AROS (x86_64) the clipboard then held no valid IFF: neither SDL_GetClipboardText nor any other program could read text an SDL program had copied.
 Change: The text is written with iffparse.library (PushChunk, WriteChunkBytes, PopChunk) on the clipboard stream, as the read path already does: FORM FTXT with a CHRS chunk in the system character set and a UTF8 chunk with the unconverted text. A failed write sets an SDL error.
 Scope: AROS (src/video/aros)
-Upstream: candidate (aros-development-team/contrib SDL3)
+Upstream: upstream (https://github.com/aros-development-team/contrib/pull/95, revision 0206e5ed36f376c572f35c99872ba249844f93b0 on contrib 142b3ff4, open since 2026-11-20)
 Verification: kits build for mainline x86_64, Raspberry Pi and x86_64 ABIv11. Mainline x86_64 (nightly 2026-11-15), 2026-11-20, LOVE 12.0: before, CLIPS:0 starts with the bytes "MROF" and SDL_GetClipboardText returns an empty string; after, it starts with "FORM", size 0x38, "FTXT", "CHRS", and text with Polish letters comes back unchanged (the CHRS chunk holds it in ISO-8859-1 with "?" for letters the set lacks). Not yet run: pasting that text into another program, Raspberry Pi and ABIv11 at run time.
 Removal: when contrib writes the clipboard through iffparse.library
 ---

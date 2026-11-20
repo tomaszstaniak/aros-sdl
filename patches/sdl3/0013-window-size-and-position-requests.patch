@@ -1,0 +1,242 @@
+Title: Window size and position requests take effect
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-20
+Author: aros-sdl project
+Problem: SDL3 keeps a requested size or position in window->pending until the backend reports it; window->x/y/w/h still hold the old values when the backend is called. The AROS backend read the old values, so SDL_SetWindowSize asked Intuition for the size the window already had, and SDL_SetWindowPosition for the old position together with the size Intuition showed at that moment, which undid a resize still in flight. A position left of or above the screen (a centred window larger than the screen) was passed on and put the title bar out of reach. There was no SyncWindow, so a program could not wait for the result, and no usable display bounds, so a program could not tell how much room a window has.
+Change: Both calls ask Intuition for one box made of the pending values and, for the rest, of the window's current ones. A requested position is moved so that the window starts on the screen, below the screen bar. Requests are counted, and the IDCMP_CHANGEWINDOW that answers the last one ends a pending request also when nothing changed. SDL_SyncWindow waits up to 500 ms for Intuition to apply the request. SDL_GetDisplayUsableBounds returns the screen without the screen bar.
+Scope: AROS (src/video/aros)
+Upstream: candidate (aros-development-team/contrib SDL3); not sent while contrib PRs 89 to 92 are open, they change the same sections of contrib's diff
+Verification: kits build for mainline x86_64, Raspberry Pi and x86_64 ABIv11. Mainline x86_64 (nightly 2026-11-15, 800x600 Workbench screen), 2026-11-20, LOVE 12.0 with OpenGL: before, SDL_SetWindowSize(640, 360) left a 780x565 window as it was, and a centred window asked for at 1280x720 opened 240 pixels left of the screen; after, the same request gives a 640x360 window, a following 729x547 request is applied, SDL_SyncWindow returns with the new size in SDL_GetWindowSize, and the windows start on the screen below the screen bar. Not run: Raspberry Pi and ABIv11, a custom screen, borderless windows.
+Removal: when contrib reads window->pending in these calls
+---
+--- a/src/video/aros/SDL_arosevents.c	2026-11-20 17:02:43
++++ b/src/video/aros/SDL_arosevents.c	2026-11-20 17:09:06
+@@ -321,13 +321,24 @@
+ AROS_ChangeWindow(SDL_VideoDevice *_this, const struct IntuiMessage *m, SDL_WindowData *data)
+ {
+ 	struct Window *w = data->win;
++	BOOL answered;
+ 
+ 	D(bug("[SDL3:arosevt] %s()\n", __func__));
+ 
++	/* Every ChangeWindowBox of ours is answered by one message. Until the
++	   last answer the window may still show an older request. */
++	if (data->box_requests > 0)
++		data->box_requests--;
++	answered = (data->box_requests == 0);
++
+ 	if (data->curr_x != w->LeftEdge || data->curr_y != w->TopEdge) {
+ 		data->curr_x = w->LeftEdge;
+ 		data->curr_y = w->TopEdge;
+ 		SDL_SendWindowEvent(data->window, SDL_EVENT_WINDOW_MOVED, data->curr_x, data->curr_y);
++	} else if (answered && data->window->last_position_pending) {
++		/* A requested position that left the window where it was: tell SDL
++		   the request is done (no event reaches the program). */
++		SDL_SendWindowEvent(data->window, SDL_EVENT_WINDOW_MOVED, data->curr_x, data->curr_y);
+ 	}
+ 
+ 	if (data->curr_w != w->Width || data->curr_h != w->Height) {
+@@ -340,6 +351,8 @@
+             AROS_GL_ResizeContext(_this, data->window);
+         }
+ #endif
++	} else if (answered && data->window->last_size_pending) {
++		SDL_SendWindowEvent(data->window, SDL_EVENT_WINDOW_RESIZED, (data->curr_w - w->BorderLeft - w->BorderRight), (data->curr_h - w->BorderTop - w->BorderBottom));
+ 	}
+ }
+ 
+--- a/src/video/aros/SDL_arosmodes.c	2026-11-20 17:04:13
++++ b/src/video/aros/SDL_arosmodes.c	2026-11-20 17:04:14
+@@ -506,3 +506,24 @@
+ 
+     return true;
+ }
++
++/* On the Workbench screen the screen bar takes the top lines: windows are
++   kept below it (see AROS_SetWindowPosition). */
++bool
++AROS_GetDisplayUsableBounds(SDL_VideoDevice *_this, SDL_VideoDisplay * display, SDL_Rect * rect)
++{
++	SDL_VideoData *data = (SDL_VideoData *) _this->internal;
++
++	AROS_GetDisplayBounds(_this, display, rect);
++
++	if (data->CustomScreen == NULL && data->WScreen != NULL) {
++		int bar = data->WScreen->BarHeight + 1;
++
++		if (bar < rect->h) {
++			rect->y += bar;
++			rect->h -= bar;
++		}
++	}
++
++	return true;
++}
+--- a/src/video/aros/SDL_arosmodes.h	2026-11-20 17:04:13
++++ b/src/video/aros/SDL_arosmodes.h	2026-11-20 17:04:14
+@@ -39,5 +39,6 @@
+ extern bool AROS_SetDisplayMode(SDL_VideoDevice *_this, SDL_VideoDisplay *display, SDL_DisplayMode *mode);
+ extern int AROS_GetScreen(SDL_VideoDevice *_this, BYTE FullScreen, bool support3d);
+ extern bool AROS_GetDisplayBounds(SDL_VideoDevice *_this, SDL_VideoDisplay * display, SDL_Rect * rect);
++extern bool AROS_GetDisplayUsableBounds(SDL_VideoDevice *_this, SDL_VideoDisplay * display, SDL_Rect * rect);
+ 
+ #endif /* _SDL_arosmodes_h */
+--- a/src/video/aros/SDL_arosvideo.c	2026-11-20 17:02:43
++++ b/src/video/aros/SDL_arosvideo.c	2026-11-20 17:04:14
+@@ -422,6 +422,7 @@
+ 			device->VideoQuit = AROS_VideoQuit;
+ 			device->GetDisplayModes = AROS_GetDisplayModes;
+ 			device->GetDisplayBounds = AROS_GetDisplayBounds;
++			device->GetDisplayUsableBounds = AROS_GetDisplayUsableBounds;
+ 			device->SetDisplayMode = AROS_SetDisplayMode;
+ 			device->SuspendScreenSaver = AROS_SuspendScreenSaver;
+ 			device->PumpEvents = AROS_PumpEvents;
+@@ -430,6 +431,7 @@
+ 			device->SetWindowIcon = AROS_SetWindowIcon;
+ 			device->SetWindowPosition = AROS_SetWindowPosition;
+ 			device->SetWindowSize = AROS_SetWindowSize;
++			device->SyncWindow = AROS_SyncWindow;
+ 			device->SetWindowMinimumSize = AROS_SetWindowMinimumSize;
+ 			device->SetWindowMaximumSize = AROS_SetWindowMaximumSize;
+ 			device->ShowWindow = AROS_ShowWindow;
+--- a/src/video/aros/SDL_aroswindow.c	2026-11-20 17:02:43
++++ b/src/video/aros/SDL_aroswindow.c	2026-11-20 17:09:06
+@@ -274,6 +274,55 @@
+ 	SDL_WindowData *data = (SDL_WindowData *) window->internal;
+ 	D(bug("[SDL3:aroswindow] %s: wnd 0x%08lx - TODO convert this icon to appicon \n", __func__, data->win));
+ 	return true;
++}
++
++/* SDL keeps a requested position and size in window->pending until the
++   backend reports them with a window event; window->x/y/w/h still hold the
++   old values when SetWindowPosition and SetWindowSize are called.
++   ChangeWindowBox is deferred as well, so the Intuition window may not show
++   an earlier request yet. This asks for the box made of what is pending and,
++   for the rest, of what the window has now. */
++static void
++AROS_ChangeToRequestedBox(SDL_Window *window)
++{
++	SDL_WindowData *data = (SDL_WindowData *) window->internal;
++	SDL_VideoData *vd = data->videodata;
++	struct Screen *scr = data->win->WScreen;
++	LONG bar = (vd->CustomScreen == NULL) ? scr->BarHeight + 1 : 0;
++	LONG left = data->win->LeftEdge, top = data->win->TopEdge;
++	LONG width = data->win->Width, height = data->win->Height;
++
++	if (window->last_size_pending) {
++		width = window->pending.w;
++		height = window->pending.h;
++
++		if ((window->flags & SDL_WINDOW_BORDERLESS) == 0) {
++			width += data->win->BorderLeft + data->win->BorderRight;
++			height += data->win->BorderTop + data->win->BorderBottom;
++		}
++
++		width = MIN((LONG)scr->Width, width);
++		height = MIN((LONG)scr->Height - bar, height);
++	}
++
++	if (window->last_position_pending) {
++		left = window->pending.x;
++		top = window->pending.y;
++
++		/* A window that starts left of or above the screen cannot be
++		   dragged back: its title bar is out of reach. */
++		if (left + width > scr->Width)
++			left = scr->Width - width;
++		if (left < 0)
++			left = 0;
++		if (top + height > scr->Height)
++			top = scr->Height - height;
++		if (top < bar)
++			top = bar;
++	}
++
++	data->box_requests++;
++	ChangeWindowBox(data->win, left, top, width, height);
+ }
+ 
+ bool
+@@ -283,13 +332,36 @@
+ 
+ 	D(bug("[SDL3:aroswindow] %s: 0x%08lx\n", __func__, data->win));
+ 
+-	if (data->win) {
+-		SDL_VideoData *vd = data->videodata;
+-		size_t top = window->y;
++	if (data->win)
++		AROS_ChangeToRequestedBox(window);
+ 
+-		top = MAX((vd->CustomScreen == NULL ? vd->WScreen->BarHeight + 1 : 0), top);
++	return true;
++}
+ 
+-		ChangeWindowBox(data->win, window->x, top, data->win->Width, data->win->Height);
++/* Intuition applies ChangeWindowBox from its input handler and then sends
++   IDCMP_CHANGEWINDOW, one for every request. The last one reports the result
++   to SDL and ends the pending state. Wait for that, but not for long: a
++   window that takes no messages must not block the program. */
++bool
++AROS_SyncWindow(SDL_VideoDevice *_this, SDL_Window * window)
++{
++	SDL_WindowData *data = (SDL_WindowData *) window->internal;
++	const Uint64 start = SDL_GetTicks();
++
++	if (!data->win)
++		return true;
++
++	while (data->box_requests > 0) {
++		AROS_PumpEvents(_this);
++
++		if (data->box_requests <= 0)
++			break;
++		if (SDL_GetTicks() - start > 500) {
++			data->box_requests = 0;
++			return false;
++		}
++
++		SDL_Delay(5);
+ 	}
+ 
+ 	return true;
+@@ -345,20 +417,9 @@
+ 	D(bug("[SDL3:aroswindow] %s()\n", __func__));
+ 
+ 	SDL_WindowData *data = (SDL_WindowData *) window->internal;
+-
+-	if (data->win) {
+-		SDL_VideoData *vd = data->videodata;
+-		size_t h = window->h, w = window->w; 
+ 
+-		if ((window->flags & SDL_WINDOW_BORDERLESS) == 0) {
+-			w += data->win->BorderLeft + data->win->BorderRight;
+-			h += data->win->BorderTop + data->win->BorderBottom;
+-		}
+-
+-		h = MIN(vd->WScreen->Height - (vd->CustomScreen == NULL ? vd->WScreen->BarHeight + 1 : 0), h);
+-
+-		ChangeWindowBox(data->win, data->win->LeftEdge, data->win->TopEdge, w, h);
+-	}
++	if (data->win)
++		AROS_ChangeToRequestedBox(window);
+ }
+ 
+ void
+--- a/src/video/aros/SDL_aroswindow.h	2026-11-20 17:02:43
++++ b/src/video/aros/SDL_aroswindow.h	2026-11-20 17:09:06
+@@ -76,6 +76,7 @@
+ 	
+ 	// Currently known window position and dimensions
+ 	LONG curr_x, curr_y, curr_w, curr_h;
++	int box_requests;	/* ChangeWindowBox calls not yet answered by IDCMP_CHANGEWINDOW */
+ 	int old_w, old_h, old_x, old_y;
+ 
+ 	// Flags that must be taken into account at AROS_ShowWindow()
+@@ -105,6 +106,7 @@
+ extern void AROS_SetWindowTitle(SDL_VideoDevice *_this, SDL_Window * window);
+ extern bool AROS_SetWindowIcon(SDL_VideoDevice *_this, SDL_Window * window, SDL_Surface * icon);
+ extern bool AROS_SetWindowPosition(SDL_VideoDevice *_this, SDL_Window * window);
++extern bool AROS_SyncWindow(SDL_VideoDevice *_this, SDL_Window * window);
+ extern void AROS_SetWindowMinimumSize(SDL_VideoDevice *_this, SDL_Window * window);
+ extern void AROS_SetWindowMaximumSize(SDL_VideoDevice *_this, SDL_Window * window);
+ extern void AROS_SetWindowSize(SDL_VideoDevice *_this, SDL_Window * window);

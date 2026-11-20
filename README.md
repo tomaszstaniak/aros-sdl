@@ -48,6 +48,12 @@ Sources are downloaded by the build script and checked against the SHA-256 value
   ES profiles, and an error where it has not (before: a desktop context, silently).
 - 0012: copied text is written to the clipboard through `iffparse.library` (before: headers
   in the processor's byte order, unreadable on x86_64).
+- 0013: `SDL_SetWindowSize` and `SDL_SetWindowPosition` take effect (before: the old size and
+  position were sent again), a requested position keeps the window on the screen,
+  `SDL_SyncWindow` waits for Intuition, and `SDL_GetDisplayUsableBounds` leaves out the
+  screen bar.
+- 0014: after an OpenGL window shrinks, its frame is drawn again (the old, larger picture
+  covered the right and bottom borders).
 
 `build.py` also adds the GL link library where static SDL3 needs it (ABIv11) and lets
 SDL3_image link after SDL3.

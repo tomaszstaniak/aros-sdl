@@ -1,0 +1,91 @@
+Title: OpenGL ES contexts through gl.library's ES profiles
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-20
+Author: aros-sdl project
+Problem: AROS_GL_CreateContext passes only the core profile to gl.library. A program that asks for SDL_GL_CONTEXT_PROFILE_ES got a desktop compatibility context instead, without an error. On a system whose OpenGL driver offers desktop OpenGL 2.1 and OpenGL ES 3.0 (VirtIO-GPU with a host that renders through OpenGL ES) a program that needs OpenGL 3.3 or ES 3.0 could not start.
+Change: SDL_GL_CONTEXT_PROFILE_ES is passed as GLA_PROFILE_ES1 (major version 1) or GLA_PROFILE_ES2 (2.0 and 3.x). The two values are defined locally when GL/gla.h does not list them. After creation the context is asked for GL_VERSION; if it does not start with "OpenGL ES" (a gl.library without ES profiles), the context is destroyed and creation fails with an error. A refused context now sets an SDL error as well.
+Scope: AROS video backend
+Upstream: candidate (aros-development-team/contrib SDL3), together with the ES profiles in gl.library
+Verification: kits build for x86_64 ABIv11, mainline x86_64 and Raspberry Pi; no new warnings in the changed file. On mainline x86_64 with the VirtIO-GPU OpenGL driver (desktop OpenGL 2.1, OpenGL ES 3.0) LOVE 12.0 gets an ES 3.0 context and runs a game (2026-11-20). Not yet run: a gl.library without ES profiles.
+Removal: when contrib's driver passes the ES profiles itself
+---
+--- a/src/video/aros/SDL_arosopengl.c	2026-11-20 09:18:38
++++ b/src/video/aros/SDL_arosopengl.c	2026-11-20 09:24:29
+@@ -61,6 +61,18 @@
+ #define glACreateContext(tagList) __sdl_glACreateContext(GLBase, (tagList))
+ #define glASetRast(ctx, tagList) __sdl_glASetRast(GLBase, (ctx), (tagList))
+ 
++/* OpenGL ES profiles of GLA_ContextProfile. A gl.library that has them
++   creates a native OpenGL ES context; the values are given here for SDKs
++   whose GL/gla.h does not list them yet. */
++#ifdef GLA_ContextProfile
++#ifndef GLA_PROFILE_ES1
++#define GLA_PROFILE_ES1 2
++#endif
++#ifndef GLA_PROFILE_ES2
++#define GLA_PROFILE_ES2 3
++#endif
++#endif
++
+ #ifdef GLA_SwapInterval
+ /* The swap interval tag and glASwapInterval() came with gl.library 20.3;
+    on an older one the tag is ignored and the call must not be made. */
+@@ -181,7 +193,15 @@
+ 
+     struct TagItem ctxAttribs [12];
+ 	LONG i = 0;
++	bool want_es = (_this->gl_config.profile_mask == SDL_GL_CONTEXT_PROFILE_ES);
+ 
++#ifndef GLA_ContextProfile
++	if (want_es) {
++		SDL_SetError("gl.library has no OpenGL ES contexts");
++		return NULL;
++	}
++#endif
++
+     if ( _this->gl_config.red_size   != 0 &&
+             _this->gl_config.blue_size  != 0 &&
+             _this->gl_config.green_size != 0 ) {
+@@ -224,6 +244,13 @@
+ 				ctxAttribs[i].ti_Tag = GLA_ContextProfile;
+ 				ctxAttribs[i++].ti_Data = GLA_PROFILE_CORE;
+ 			}
++			else if (want_es)
++			{
++				/* ES 1.x is its own API; ES 2.0 and 3.x share one */
++				ctxAttribs[i].ti_Tag = GLA_ContextProfile;
++				ctxAttribs[i++].ti_Data = (_this->gl_config.major_version == 1) ?
++					GLA_PROFILE_ES1 : GLA_PROFILE_ES2;
++			}
+ 			ctxAttribs[i].ti_Tag = GLA_ContextMajorVersion;
+ 			ctxAttribs[i++].ti_Data = _this->gl_config.major_version;
+ 			ctxAttribs[i].ti_Tag = GLA_ContextMinorVersion;
+@@ -240,6 +267,28 @@
+ 			ctxAttribs[i].ti_Tag = TAG_DONE;
+ 
+ 			GLAContext newCtx = glACreateContext(ctxAttribs);
++			if (!newCtx) {
++				SDL_SetError("gl.library could not create the requested OpenGL context");
++				return NULL;
++			}
++			if (want_es) {
++				/* A gl.library without the ES profiles takes the unknown
++				   profile value for a desktop one. Ask the context what it is. */
++				const GLubyte *(*getstring)(GLenum);
++				const char *version = NULL;
++
++				glAMakeCurrent(newCtx);
++				getstring = (const GLubyte *(*)(GLenum))glAGetProcAddress((const GLubyte *)"glGetString");
++				if (getstring)
++					version = (const char *)getstring(GL_VERSION);
++				if (!version || SDL_strncmp(version, "OpenGL ES", 9) != 0) {
++					glAMakeCurrent((GLAContext)_this->gl_data->gldd_GLACtx);
++					glADestroyContext(newCtx);
++					SDL_SetError("gl.library has no OpenGL ES contexts");
++					return NULL;
++				}
++				glAMakeCurrent((GLAContext)_this->gl_data->gldd_GLACtx);
++			}
+ 			if ((newCtx) && (_this->gl_data->gldd_GLACtx == NULL))
+ 				AROS_GL_MakeCurrent(_this, window, newCtx);
+ 

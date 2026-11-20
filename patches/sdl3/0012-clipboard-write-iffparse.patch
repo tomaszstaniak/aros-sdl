@@ -1,0 +1,213 @@
+Title: Write clipboard text through iffparse.library
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-20
+Author: aros-sdl project
+Problem: AROS_SetClipboardText wrote the IFF headers (FORM, sizes, chunk IDs) as C structures in the processor's byte order. On little-endian AROS (x86_64) the clipboard then held no valid IFF: neither SDL_GetClipboardText nor any other program could read text an SDL program had copied.
+Change: The text is written with iffparse.library (PushChunk, WriteChunkBytes, PopChunk) on the clipboard stream, as the read path already does: FORM FTXT with a CHRS chunk in the system character set and a UTF8 chunk with the unconverted text. A failed write sets an SDL error.
+Scope: AROS (src/video/aros)
+Upstream: candidate (aros-development-team/contrib SDL3)
+Verification: kits build for mainline x86_64, Raspberry Pi and x86_64 ABIv11. Mainline x86_64 (nightly 2026-11-15), 2026-11-20, LOVE 12.0: before, CLIPS:0 starts with the bytes "MROF" and SDL_GetClipboardText returns an empty string; after, it starts with "FORM", size 0x38, "FTXT", "CHRS", and text with Polish letters comes back unchanged (the CHRS chunk holds it in ISO-8859-1 with "?" for letters the set lacks). Not yet run: pasting that text into another program, Raspberry Pi and ABIv11 at run time.
+Removal: when contrib writes the clipboard through iffparse.library
+---
+--- a/src/video/aros/SDL_arosclipboard.c	2026-11-20 14:13:18
++++ b/src/video/aros/SDL_arosclipboard.c	2026-11-20 14:13:18
+@@ -39,161 +39,60 @@
+ #define ID_CHRS	MAKE_ID('C','H','R','S')
+ #define ID_UTF8	MAKE_ID('U','T','F','8')
+ 
+-STATIC APTR clipboard_open(void)
++/* The text goes to the clipboard as FORM FTXT with a CHRS chunk in the system
++   character set, which every program reads, and a UTF8 chunk with the
++   unconverted text, which AROS_GetClipboardText prefers. iffparse.library
++   writes the chunk headers, so sizes are big-endian on every processor. */
++bool
++AROS_SetClipboardText(SDL_VideoDevice *_this, const char *text)
+ {
+-	struct IOClipReq *io;
+-	struct MsgPort *mp;
++	struct IFFHandle *clip;
++	char *stext;
++	bool ok = false;
+ 
+-	mp = CreateMsgPort();
++	if (!text)
++		text = "";
+ 
+-	if ((io = (struct IOClipReq *)CreateIORequest(mp,sizeof(struct IOClipReq)))) {
+-		if (!(OpenDevice("clipboard.device", 0, (struct IORequest *)io, 0))) {
+-			return io;
+-		}
++	stext = AROS_ConvertUTF8Text(text);
++	if (!stext)
++		return SDL_OutOfMemory();
+ 
+-		DeleteIORequest((struct IORequest *)io);
+-	}
++	if ((clip = AllocIFF())) {
++		clip->iff_Stream = (IPTR)OpenClipboard(0);
+ 
+-	DeleteMsgPort(mp);
+-	return NULL;
+-}
++		if (clip->iff_Stream) {
++			InitIFFasClip(clip);
+ 
+-STATIC ULONG clipboard_write_data(struct IOClipReq *io, CONST_APTR data, ULONG len)
+-{
+-	LONG rc;
++			if (!OpenIFF(clip, IFFF_WRITE)) {
++				LONG slen = (LONG)SDL_strlen(stext);
++				LONG ulen = (LONG)SDL_strlen(text);
+ 
+-	io->io_Command = CMD_WRITE;
+-	io->io_Data    = (APTR)data;
+-	io->io_Length  = len;
+-	DoIO( (struct IORequest *)io);
++				if (!PushChunk(clip, ID_FTXT, ID_FORM, IFFSIZE_UNKNOWN)
++				 && !PushChunk(clip, 0, ID_CHRS, IFFSIZE_UNKNOWN)
++				 && WriteChunkBytes(clip, stext, slen) == slen
++				 && !PopChunk(clip)
++				 && !PushChunk(clip, 0, ID_UTF8, IFFSIZE_UNKNOWN)
++				 && WriteChunkBytes(clip, (APTR)text, ulen) == ulen
++				 && !PopChunk(clip)
++				 && !PopChunk(clip))
++					ok = true;
+ 
+-	if (io->io_Actual != len) {
+-		io->io_Error = 1;
+-	}
++				CloseIFF(clip);
++			}
+ 
+-	rc = io->io_Error ? FALSE : TRUE;
+-	return rc;
+-}
+-
+-
+-STATIC VOID clipboard_pad_text(struct IOClipReq *io, ULONG textlen)
+-{
+-	if (textlen & 1)
+-		clipboard_write_data(io, "", 1);
+-}
+-
+-
+-STATIC ULONG clipboard_write_header_and_text(struct IOClipReq *io, CONST_STRPTR string, ULONG slen, ULONG ulen)
+-{
+-	ULONG rc;
+-
+-	struct
+-	{
+-		ULONG form;
+-		ULONG totalsize;
+-		ULONG ftxt;
+-		ULONG type;
+-		ULONG strlen;
+-	} iffheader;
+-
+-	io->io_Offset = 0;
+-	io->io_Error  = 0;
+-//	io->io_ClipID = 0;
+-
+-	iffheader.form      = ID_FORM;
+-	iffheader.totalsize = (slen & 1 ? slen + 1 : slen) + (ulen & 1 ? ulen + 1 : ulen) + 12 + 8;
+-	iffheader.ftxt      = ID_FTXT;
+-	iffheader.type      = ID_CHRS;
+-	iffheader.strlen    = slen;
+-
+-	rc = FALSE;
+-
+-	if (clipboard_write_data(io, &iffheader, sizeof(iffheader))) {
+-		if (clipboard_write_data(io, string, slen)) {
+-			clipboard_pad_text(io, slen);
+-			rc = TRUE;
++			CloseClipboard((struct ClipboardHandle *)clip->iff_Stream);
+ 		}
+-	}
+ 
+-	return rc;
+-}
+-
+-
+-STATIC ULONG clipboard_write_utf8(struct IOClipReq *io, CONST_STRPTR utext, ULONG ulen)
+-{
+-	ULONG rc;
+-
+-	struct
+-	{
+-		ULONG type;
+-		ULONG strlen;
+-	} utf8_header;
+-
+-	/* FIXME: For correct operation we should also store font name. Used font
+-	 * is relevant with guides written in Japanese for example.
+-	 */
+-
+-	utf8_header.type   = ID_UTF8;
+-	utf8_header.strlen = ulen;
+-
+-	rc = FALSE;
+-
+-	if (clipboard_write_data(io, &utf8_header, sizeof(utf8_header))) {
+-		if (clipboard_write_data(io, utext, ulen)) {
+-			clipboard_pad_text(io, ulen);
+-			rc = TRUE;
+-		}
++		FreeIFF(clip);
+ 	}
+ 
+-	return rc;
+-}
++	SDL_free(stext);
+ 
+-STATIC VOID clipboard_finalize(struct IOClipReq *io)
+-{
+-	io->io_Command = CMD_UPDATE;
+-	DoIO((struct IORequest *)io);
++	if (!ok)
++		return SDL_SetError("Could not write to the clipboard");
++	return true;
+ }
+ 
+-STATIC void clipboard_close(struct IOClipReq *io)
+-{
+-	if (io) {
+-		struct MsgPort *mp = io->io_Message.mn_ReplyPort;
+-
+-		CloseDevice((struct IORequest *)io);
+-		DeleteIORequest((struct IORequest *)io);
+-		DeleteMsgPort(mp);
+-	}
+-}
+-
+-bool
+-AROS_SetClipboardText(SDL_VideoDevice *_this, const char *text)
+-{
+-	APTR ctx;
+-	int rc = -1;
+-
+-	if ((ctx = clipboard_open())) {
+-		char *stext = NULL;
+-		
+-		stext = AROS_ConvertUTF8Text(text);
+-
+-		if (stext) {
+-			int ulen = strlen(text);
+-
+-			if (clipboard_write_header_and_text(ctx, stext, strlen(stext), ulen)) {
+-				if (clipboard_write_utf8(ctx, text, ulen))
+-					rc = 0;
+-			}
+-
+-			SDL_free(stext);
+-			clipboard_finalize(ctx);
+-		}
+-		
+-		clipboard_close(ctx);
+-	}
+-
+-	return (rc == 0);
+-}
+-
+ char *
+ AROS_GetClipboardText(SDL_VideoDevice *_this)
+ {

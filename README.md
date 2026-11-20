@@ -46,6 +46,8 @@ Sources are downloaded by the build script and checked against the SHA-256 value
   display driver that keeps bitmaps in video memory.
 - 0011: `SDL_GL_CONTEXT_PROFILE_ES` gives an OpenGL ES context where `gl.library` has
   ES profiles, and an error where it has not (before: a desktop context, silently).
+- 0012: copied text is written to the clipboard through `iffparse.library` (before: headers
+  in the processor's byte order, unreadable on x86_64).
 
 `build.py` also adds the GL link library where static SDL3 needs it (ABIv11) and lets
 SDL3_image link after SDL3.

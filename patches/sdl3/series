@@ -9,3 +9,4 @@
 0009-smart-refresh-window.patch
 0010-window-surface-in-memory.patch
 0011-opengl-es-contexts.patch
+0012-clipboard-write-iffparse.patch

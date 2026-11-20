@@ -1,0 +1,64 @@
+Title: Attach the OpenGL context to a window that was opened again
+Repository: SDL 3.4.12 with contrib SDL3-3.4.12-aros.diff (contrib 142b3ff4)
+Date: 2026-11-21
+Author: aros-sdl project
+Problem: SDL_SetWindowResizable, SDL_SetWindowBordered, SDL_SetWindowAlwaysOnTop and a fullscreen change close the Intuition window and open a new one. The current OpenGL context stayed attached to the closed window, so nothing drawn afterwards reached the new window.
+Change: After the new window is open, the current context is attached to it (glASetRast with GLA_Window) and made current again.
+Scope: AROS (src/video/aros)
+Upstream: candidate (contrib SDL3 port)
+Verification: mainline x86_64 (nightly 2026-11-15, VirtIO-GPU with VirGL, pool slot v1-4), 2026-11-21, LOVE 12.0: a program that opens a window and then calls love.window.updateMode with resizable = true, or with fullscreen = true and the desktop type, showed an empty grey window before (its drawing calls ran); after, both draw and the program exits normally. Balatro 1.0.1o (borderless fullscreen at start) shows its main menu. Not run: Raspberry Pi, ABIv11, softpipe, SDL_SetWindowAlwaysOnTop, exclusive fullscreen.
+Removal: when the contrib port carries the change
+---
+--- a/src/video/aros/SDL_arosopengl.c	2026-11-21 00:30:18
++++ b/src/video/aros/SDL_arosopengl.c	2026-11-21 00:30:18
+@@ -349,6 +349,28 @@
+ 	return true;
+ }
+ 
++/* The Intuition window of an SDL window was closed and opened again
++   (resizable, bordered, always on top, fullscreen changes). The context
++   still pointed at the closed window: attach it to the new one. */
++void
++AROS_GL_WindowRecreated(SDL_VideoDevice *_this, SDL_Window * window)
++{
++	SDL_WindowData *data = (SDL_WindowData *) window->internal;
++	GLAContext ctx = _this->gl_data->gldd_GLACtx;
++	struct TagItem tags[2];
++
++	D(bug("[SDL3:arosgl] %s(0x%p)\n", __func__, window));
++
++	if (!GLBase || !ctx || !data->win || data->__AGLCtx != ctx)
++		return;
++
++	tags[0].ti_Tag = GLA_Window;
++	tags[0].ti_Data = (IPTR)data->win;
++	tags[1].ti_Tag = TAG_DONE;
++	glASetRast(ctx, tags);
++	glAMakeCurrent(ctx);
++}
++
+ bool
+ AROS_GL_DestroyContext(SDL_VideoDevice *_this, SDL_GLContext context)
+ {
+--- a/src/video/aros/SDL_arosopengl.h	2026-11-21 00:30:18
++++ b/src/video/aros/SDL_arosopengl.h	2026-11-21 00:30:18
+@@ -54,6 +54,7 @@
+ 
+ /* Non-SDL functions */
+ extern int AROS_GL_ResizeContext(SDL_VideoDevice *_this, SDL_Window *window);
++extern void AROS_GL_WindowRecreated(SDL_VideoDevice *_this, SDL_Window *window);
+ extern bool AROS_GL_InitContext(SDL_VideoDevice *_this, SDL_Window * window, GLAContext *glcont);
+ #endif /* !SDL_VIDEO_OPENGL_AGL_INTERN */
+ 
+--- a/src/video/aros/SDL_aroswindow.c	2026-11-21 00:30:18
++++ b/src/video/aros/SDL_aroswindow.c	2026-11-21 00:30:18
+@@ -971,6 +971,9 @@
+     AROS_ShowWindow_Internal(_this, window);
+ 
+     if (data->win) { // Make sure the new window is active
++#if SDL_VIDEO_OPENGL_AGL
++        AROS_GL_WindowRecreated(_this, window);
++#endif
+         AROS_ShowWindow(_this, window);
+     }
+ }

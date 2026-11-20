@@ -54,6 +54,8 @@ Sources are downloaded by the build script and checked against the SHA-256 value
   screen bar.
 - 0014: after an OpenGL window shrinks, its frame is drawn again (the old, larger picture
   covered the right and bottom borders).
+- 0015: the OpenGL context follows a window that SDL closes and opens again (resizable,
+  bordered, always on top, fullscreen changes); before, the window stayed empty.
 
 `build.py` also adds the GL link library where static SDL3 needs it (ABIv11) and lets
 SDL3_image link after SDL3.

@@ -56,6 +56,9 @@ Sources are downloaded by the build script and checked against the SHA-256 value
   covered the right and bottom borders).
 - 0015: the OpenGL context follows a window that SDL closes and opens again (resizable,
   bordered, always on top, fullscreen changes); before, the window stayed empty.
+- 0016: fullscreen changes open the window again in its new form (they ran one step behind
+  the requests), size requests leave a fullscreen window alone, and the OpenGL context follows
+  the window through a fullscreen mode with its own screen (entering it crashed).
 
 `build.py` also adds the GL link library where static SDL3 needs it (ABIv11) and lets
 SDL3_image link after SDL3.

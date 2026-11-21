@@ -13,3 +13,4 @@
 0013-window-size-and-position-requests.patch
 0014-frame-after-gl-window-shrinks.patch
 0015-gl-context-follows-recreated-window.patch
+0016-fullscreen-changes-reopen-window.patch

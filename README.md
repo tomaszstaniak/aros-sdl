@@ -87,6 +87,10 @@ on another.
 `tests/sdl3-selftest.c` checks start-up, iconv, a PNG round trip, a window and each
 renderer; `aros-sdl3-selftest [software|opengl|all] [seconds]`.
 
+`tests/aros/sdl3-gl-recreate-check.c` checks that OpenGL keeps drawing after SDL closes and
+opens the window again (patch 0015): it changes the resizable and border properties and
+reads the middle of the window back from the screen after each change.
+
 ## Licences
 
 SDL and SDL3_image: zlib licence. libiconv: LGPL 2.1 or later (static linking: see its
